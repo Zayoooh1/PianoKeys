@@ -1,8 +1,29 @@
 import requests
 from bs4 import BeautifulSoup
-import urllib.parse # For quoting search query
+import urllib.parse # For quoting search query and urlencode
 
 USER_AGENT = 'InteractivePianoTeacherApp/0.1 (Python Requests)'
+
+def _construct_freemidi_search_url(song_title: str, base_url: str = "https://freemidi.org") -> str:
+    """
+    Constructs the search URL for freemidi.org (or a similar engine).
+    Sanitizes the song title for URL query parameters.
+    """
+    if not base_url.endswith('/'):
+        base_url += '/'
+    # freemidi.org uses /search?query=<song_title>
+    # Other sites might use /search/<song_title> or other patterns.
+    # This helper is specific to query parameter based search.
+
+    # Quote the song title to make it URL-safe, ensuring '/' is also encoded
+    quoted_title = urllib.parse.quote(song_title, safe='')
+
+    # Using urlencode for query parameters is generally safer if there are multiple params
+    # For a single 'query' param, direct f-string is also common.
+    # params = {'query': song_title} # urlencode handles quoting internally
+    # return f"{base_url}search?{urllib.parse.urlencode(params)}"
+    return f"{base_url}search?query={quoted_title}"
+
 
 def find_midi_links(song_title: str, search_engine_url="https://freemidi.org") -> list[dict]:
     """
@@ -23,15 +44,7 @@ def find_midi_links(song_title: str, search_engine_url="https://freemidi.org") -
         return results
 
     # Step 1: Perform the search on the site
-    # freemidi.org uses /search?query=<song_title>
-    search_query_path = "/search" # Path for search functionality
-    query_params = {'query': song_title}
-
-    # Correctly join the base URL with the search path
-    if search_engine_url.endswith('/'):
-        search_engine_url = search_engine_url[:-1]
-
-    search_url = f"{search_engine_url}{search_query_path}?{urllib.parse.urlencode(query_params)}"
+    search_url = _construct_freemidi_search_url(song_title, search_engine_url)
 
     print(f"Searching on: {search_url}")
     headers = {'User-Agent': USER_AGENT}
@@ -147,3 +160,146 @@ if __name__ == '__main__':
     # if placeholder_results:
     #     for item in placeholder_results:
     #         print(f"Placeholder: {item['title']} - {item['url']}")
+
+
+# --- MIDI Download Function ---
+import os # For path operations
+
+def download_midi_file(url: str, temp_dir: str = "temp_midi") -> str | None:
+    """
+    Downloads a MIDI file from a given URL into a temporary directory.
+
+    Args:
+        url: The direct URL to the .mid file.
+        temp_dir: The directory to save the downloaded file. Defaults to "temp_midi".
+
+    Returns:
+        The local filepath to the downloaded MIDI file on success, None on failure.
+    """
+    if not url:
+        print("Download URL is empty.")
+        return None
+
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # Generate a filename
+    try:
+        # Try to get filename from URL path
+        parsed_url = urllib.parse.urlparse(url)
+        filename_from_path = os.path.basename(parsed_url.path)
+        if filename_from_path and filename_from_path.lower().endswith((".mid", ".midi")):
+            # Basic sanitization (very basic, a library might be better for robust sanitization)
+            filename = "".join(c for c in filename_from_path if c.isalnum() or c in ['.', '_', '-']).strip()
+            if not filename: # If sanitization results in empty string
+                 filename = urllib.parse.quote_plus(url) + ".mid" # Fallback
+        else: # If no .mid extension or empty path, create one from query or hash
+            # Fallback to a more generic name if path doesn't yield a good filename
+            # Using a part of the URL, quoted, can be an option. Or UUID.
+            # For simplicity, let's use the last part of the URL if possible, or a UUID.
+            if parsed_url.query: # e.g. download?file=Song.mid&id=123
+                query_dict = urllib.parse.parse_qs(parsed_url.query)
+                if 'file' in query_dict and query_dict['file'][0].lower().endswith((".mid",".midi")):
+                    filename = "".join(c for c in query_dict['file'][0] if c.isalnum() or c in ['.', '_', '-']).strip()
+                else: # Fallback to a unique name if 'file' param is not good
+                    import uuid
+                    filename = str(uuid.uuid4().hex) + ".mid"
+            else:
+                import uuid
+                filename = str(uuid.uuid4().hex) + ".mid"
+
+        if not filename.lower().endswith((".mid", ".midi")): # Ensure it has an extension
+            filename += ".mid"
+
+    except Exception as e:
+        print(f"Error generating filename from URL '{url}': {e}")
+        import uuid # Ensure uuid is imported for fallback
+        filename = str(uuid.uuid4().hex) + ".mid"
+
+    local_filepath = os.path.join(temp_dir, filename)
+    print(f"Attempting to download MIDI from '{url}' to '{local_filepath}'")
+
+    headers = {'User-Agent': USER_AGENT} # USER_AGENT should be defined at module level
+
+    try:
+        response = requests.get(url, stream=True, headers=headers, timeout=20) # Increased timeout
+        response.raise_for_status()  # Check for HTTP errors
+
+        with open(local_filepath, 'wb') as f:
+            # It's common to iterate over response.iter_content for large files,
+            # but MIDI files are usually small, so response.content is often fine.
+            f.write(response.content)
+
+        print(f"Successfully downloaded MIDI to '{local_filepath}' ({os.path.getsize(local_filepath)} bytes).")
+        return local_filepath
+
+    except requests.exceptions.Timeout:
+        print(f"Error: Timeout while trying to download '{url}'.")
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading MIDI from '{url}': {e}")
+    except IOError as e:
+        print(f"Error writing MIDI file to '{local_filepath}': {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred during download: {e}")
+
+    # Cleanup if download failed partway
+    if os.path.exists(local_filepath):
+        try:
+            file_size = os.path.getsize(local_filepath)
+            if file_size == 0: # Or some other check to see if it's an invalid/empty file
+                os.remove(local_filepath)
+                print(f"Cleaned up empty/failed download: {local_filepath}")
+        except OSError:
+            pass # Ignore errors during cleanup attempt
+
+    return None
+
+
+if __name__ == '__main__':
+    # Test the find_midi_links function
+    # test_song = "Counting Stars"
+    test_song = "Beethoven Fur Elise"
+    # test_song = "Invalid Song Name XYZ123"
+    # test_song = "test"
+
+    print(f"\n--- Testing find_midi_links for '{test_song}' ---")
+    found_files = find_midi_links(test_song)
+
+    if found_files:
+        print(f"\n--- Found {len(found_files)} MIDI files for '{test_song}': ---")
+        for i, item in enumerate(found_files):
+            print(f"{i+1}. Title: {item['title']}")
+            print(f"   URL: {item['url']}")
+
+        # Test downloading the first result if any
+        if found_files[0].get('url'):
+            print(f"\n--- Testing download_midi_file for: {found_files[0]['title']} ---")
+            downloaded_file_path = download_midi_file(found_files[0]['url'])
+            if downloaded_file_path:
+                print(f"Downloaded test file to: {downloaded_file_path}")
+                # Here you could try to parse it with mido or music_logic.parse_midi_file
+                # For example:
+                # from music_logic import parse_midi_file as parse_local_midi
+                # parsed_info = parse_local_midi(downloaded_file_path)
+                # if parsed_info:
+                #     print(f"Successfully parsed downloaded file: {len(parsed_info['notes'])} notes.")
+                # else:
+                #     print("Failed to parse the downloaded file.")
+                # try:
+                #     os.remove(downloaded_file_path) # Clean up test download
+                #     print(f"Cleaned up: {downloaded_file_path}")
+                # except OSError as e:
+                #     print(f"Error cleaning up {downloaded_file_path}: {e}")
+
+            else:
+                print("Download test failed.")
+
+    else:
+        print(f"\n--- No MIDI files found for '{test_song}'. ---")
+
+    print("\n--- Testing with an empty query ---")
+    empty_query_results = find_midi_links("")
+    print(f"Results for empty query: {len(empty_query_results)}")
+
+    print("\n--- Testing download with invalid URL ---")
+    invalid_url_path = download_midi_file("http://invalid.url/test.mid")
+    print(f"Result for invalid URL download: {invalid_url_path}")

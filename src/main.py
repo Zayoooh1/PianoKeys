@@ -7,8 +7,9 @@ import os # For creating dummy sound files
 from keyboard import Keyboard
 from music_logic import parse_midi_file, Note
 from piano_roll import PianoRoll, create_test_midi
-from gui_elements import TextInputBox, Button
-from online_search import find_midi_links # Added online search
+from gui_elements import TextInputBox, Button, ScrollableList
+from online_search import find_midi_links, download_midi_file # Added download_midi_file
+# os was already imported for dummy sound file creation
 
 # --- Constants ---
 SCREEN_WIDTH = 800
@@ -199,7 +200,7 @@ def main():
     keyboard_layout_info = piano_keyboard.get_key_layout_info()
 
     # Create dummy sound files for the notes on this keyboard
-    if piano_keyboard.all_midi_notes: # Check if list is populated
+    if piano_keyboard.all_midi_notes:
          create_dummy_sound_files(piano_keyboard.all_midi_notes)
     else:
         print("Warning: piano_keyboard.all_midi_notes is empty. Cannot create dummy sound files.")
@@ -247,18 +248,35 @@ def main():
             break
     print(f"KEY_TO_MIDI mapping created for {len(KEY_TO_MIDI)} keys from the piano keyboard.")
 
+    # --- Load Default Song ---
+    default_song_filename = "Counting_Stars.mid"
+    default_song_path = os.path.join("assets/midi", default_song_filename)
 
-    # Create a dummy MIDI file for the piano roll and parse it
-    dummy_midi_path = "assets/midi/dummy_pianoroll_test.mid"
-    try:
-        midi_ticks_per_beat, midi_tempo = create_test_midi(dummy_midi_path)
-    except Exception as e:
-        print(f"Could not create/load test MIDI '{dummy_midi_path}': {e}. Using defaults.")
-        midi_ticks_per_beat, midi_tempo = 480, 500000
+    initial_song_data = parse_midi_file(default_song_path)
 
-    parsed_notes = parse_midi_file(dummy_midi_path)
-    if not parsed_notes:
-        print(f"Warning: No notes parsed from '{dummy_midi_path}'. Piano roll will be empty.")
+    if initial_song_data:
+        parsed_notes = initial_song_data['notes']
+        initial_song_tpb = initial_song_data['ticks_per_beat']
+        initial_song_tempo = initial_song_data['tempo']
+        print(f"Loading default song: {default_song_filename}")
+        if not parsed_notes: # This case should be handled by parse_midi_file returning None now
+             print(f"Warning: Default song '{default_song_filename}' parsed but has no notes (or parse_midi_file returned None for notes part).")
+             # parse_midi_file returns None if no notes, so this specific inner check might not be hit if logic is strict.
+             parsed_notes = [] # Ensure it's an empty list if somehow notes key is missing post-parsing
+    else:
+        print(f"Error: Default song '{default_song_filename}' could not be parsed or found. Loading empty.")
+        parsed_notes = []
+        initial_song_tpb = 480 # Default ticks per beat
+        initial_song_tempo = 500000 # Default tempo (120 BPM)
+        # Attempt to create an empty placeholder if the file doesn't exist, as a last resort.
+        if not os.path.exists(default_song_path):
+            print(f"Default song file {default_song_path} not found. Attempting to create an empty placeholder.")
+            try:
+                os.makedirs(os.path.dirname(default_song_path), exist_ok=True)
+                with open(default_song_path, 'wb') as f: pass # Create empty file
+                print(f"Created empty placeholder for {default_song_path}")
+            except Exception as e_create:
+                print(f"Could not create placeholder {default_song_path}: {e_create}")
 
     # Initialize PianoRoll
     piano_roll_render_height = int(MAIN_SECTION_HEIGHT * PIANO_ROLL_HEIGHT_RATIO)
@@ -270,9 +288,27 @@ def main():
         x=piano_roll_x, y=piano_roll_y,
         width=piano_roll_width, height=piano_roll_render_height,
         keyboard_layout_info=keyboard_layout_info,
-        notes=parsed_notes,
-        ticks_per_beat=midi_ticks_per_beat,
-        tempo=midi_tempo
+        notes=parsed_notes, # Use notes from default song
+        ticks_per_beat=initial_song_tpb,
+        tempo=initial_song_tempo
+    )
+
+    # --- Search Results Display List ---
+    current_search_results_data = []
+    show_search_results_ui = False
+    # Position the scrollable list in the main section, e.g., above the piano roll or overlapping it.
+    # For now, let's make it appear in the top part of the main section.
+    search_results_list_rect_height = MAIN_SECTION_HEIGHT - PIANO_ROLL_Y_OFFSET_FROM_HEADER - 10 # Fill available space above piano roll for now
+    search_results_list_rect_height = int(MAIN_SECTION_HEIGHT * 0.7) # Or a fixed portion
+    search_results_list_y = MAIN_SECTION_Y_START + PIANO_ROLL_Y_OFFSET_FROM_HEADER
+
+    search_results_display_list = ScrollableList(
+        x=piano_roll_x, # Align with piano roll x
+        y=search_results_list_y,
+        w=piano_roll_width, # Align with piano roll width
+        h=search_results_list_rect_height,
+        font=ui_font_small,
+        item_height=25
     )
 
     # --- Control Panel GUI Elements ---
@@ -318,14 +354,19 @@ def main():
 
         if search_results:
             print(f"Found {len(search_results)} results for '{query}':")
-            for i, result in enumerate(search_results):
-                print(f"  {i+1}. {result['title']} - {result['url']}")
-            # Future: Display these results in a list in the UI
-            # For now, can update a status label or the input box itself as a simple feedback
-            search_input_box.set_text(f"Found {len(search_results)} for: {query}")
+            for i, result_item in enumerate(search_results): # Renamed to avoid conflict
+                print(f"  {i+1}. {result_item['title']} - {result_item['url']}")
+            current_search_results_data = search_results
+            search_results_display_list.set_items(search_results)
+            show_search_results_ui = True
+            search_input_box.active = False # Deactivate input box after search
         else:
             print(f"No MIDI files found for '{query}'.")
-            search_input_box.set_text(f"No results for: {query}")
+            no_results_message = [{'title': 'No results found.', 'url': None}]
+            current_search_results_data = no_results_message
+            search_results_display_list.set_items(no_results_message)
+            show_search_results_ui = True
+            search_input_box.active = False
 
 
     search_button_width = 100
@@ -358,16 +399,74 @@ def main():
                 running = False
 
             # --- GUI Element Event Handling ---
-            # Pass event to input box first. If it's active, it might consume KEYDOWNs.
             input_box_action = search_input_box.handle_event(event)
             if input_box_action == 'enter_pressed':
                 on_search_button_click()
+            search_button.handle_event(event)
 
-            search_button.handle_event(event) # Then to the button
+            if show_search_results_ui:
+                clicked_idx = search_results_display_list.handle_event(event)
+                if clicked_idx is not None:
+                    selected_data = search_results_display_list.get_selected_item_data()
+                    if selected_data and selected_data.get('url'):
+                        print(f"User selected: {selected_data['title']} - URL: {selected_data['url']}")
+
+                        # --- Download and Load Logic ---
+                        original_button_text = search_button.text # Save current button text
+                        search_input_box.set_text(f"Downloading: {selected_data['title'][:25]}...")
+                        search_button.set_text("Busy...")
+                        search_button.set_enabled(False)
+                        # pygame.event.set_blocked(pygame.MOUSEMOTION) # Optional: block some events during sensitive ops
+
+                        downloaded_path = download_midi_file(selected_data['url'])
+
+                        if downloaded_path:
+                            print(f"Downloaded to: {downloaded_path}")
+                            parsed_midi_data = parse_midi_file(downloaded_path)
+                            if parsed_midi_data:
+                                notes = parsed_midi_data['notes']
+                                tpb = parsed_midi_data['ticks_per_beat']
+                                tempo = parsed_midi_data['tempo']
+
+                                the_piano_roll.set_song(notes, tpb, tempo)
+                                current_song_time_seconds = 0.0
+                                paused = False
+                                the_piano_roll.hit_effects.clear()
+                                # Clear any visually pressed keys on the keyboard
+                                for k_midi in list(piano_keyboard.pressed_keys.keys()):
+                                    piano_keyboard.set_key_pressed(k_midi, False)
+
+                                search_input_box.set_text(f"Loaded: {selected_data['title'][:30]}")
+                                print("Successfully loaded new song into PianoRoll.")
+                            else:
+                                error_msg = f"Failed to parse MIDI: {selected_data['title'][:20]}"
+                                print(error_msg)
+                                search_input_box.set_text(error_msg)
+
+                            try: # Cleanup the downloaded file
+                                os.remove(downloaded_path)
+                                # print(f"Removed temporary MIDI file: {downloaded_path}")
+                            except OSError as e:
+                                print(f"Error deleting temporary MIDI file '{downloaded_path}': {e}")
+                        else:
+                            error_msg = f"Download failed for {selected_data['title'][:20]}"
+                            print(error_msg)
+                            search_input_box.set_text(error_msg)
+
+                        search_button.set_text(original_button_text)
+                        search_button.set_enabled(True)
+                        # pygame.event.set_allowed(None) # Unblock all events
+                        # --- End Download and Load Logic ---
+
+                        show_search_results_ui = False # Hide list after attempting to load
+                        search_results_display_list.selected_index_abs = None
+                    else: # Clicked on "No results found" or a non-actionable item
+                        show_search_results_ui = False
+                        search_results_display_list.selected_index_abs = None
             # --- End GUI Element Event Handling ---
 
-            # Only process game-related KEYDOWN if text input is NOT active
-            if not search_input_box.active:
+            # Only process game-related KEYDOWN if text input AND search results list are NOT active/shown
+            if not search_input_box.active and not show_search_results_ui:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
@@ -386,21 +485,20 @@ def main():
                         piano_keyboard.set_key_pressed(midi_note, True)
                         the_piano_roll.trigger_hit_effect(midi_note)
 
-            # KEYUP events for piano can be processed even if input box was active (e.g. user presses 'a' in box, then releases)
-            # However, to prevent stopping a note if 'a' was typed into box, check active state here too.
-            # A more robust way is for handle_event to return whether it consumed the event.
-            if event.type == pygame.KEYUP:
-                 if not search_input_box.active and event.key in KEY_TO_MIDI : # Only if input not active
-                    midi_note = KEY_TO_MIDI[event.key]
-                    piano_keyboard.set_key_pressed(midi_note, False)
+            if event.type == pygame.KEYUP: # KEYUP for piano notes can happen regardless of search UI focus
+                 if event.key in KEY_TO_MIDI :
+                    # If text input was active when key was pressed, it won't be in KEY_TO_MIDI for piano.
+                    # This check ensures we only process keyups for keys mapped to piano.
+                    if not search_input_box.active: # Only release if input not active during keyup
+                        midi_note = KEY_TO_MIDI[event.key]
+                        piano_keyboard.set_key_pressed(midi_note, False)
 
             if event.type == pygame.MOUSEBUTTONDOWN:
-                # If mouse click was not on an active GUI element that consumes clicks (like text input activation)
-                # For simplicity, assume Button clicks are handled by its handle_event and don't need explicit check here to prevent piano interaction
-                # But TextInputBox activation should prevent piano interaction if click is on it.
-                if not search_input_box.rect.collidepoint(event.pos): # If click is NOT on input box
+                # Prevent piano interaction if click is on search results list or input box
+                if not (show_search_results_ui and search_results_display_list.is_mouse_over(event.pos)) and \
+                   not search_input_box.rect.collidepoint(event.pos):
                     if not paused and event.button == 1:
-                        if piano_keyboard.rect.collidepoint(event.pos): # And click IS on keyboard
+                        if piano_keyboard.rect.collidepoint(event.pos):
                             clicked_midi_note = piano_keyboard.handle_mouse_click(event.pos)
                             if clicked_midi_note is not None:
                                 the_piano_roll.trigger_hit_effect(clicked_midi_note)
@@ -409,8 +507,10 @@ def main():
         for star in stars:
             star.update()
 
-        search_input_box.update(dt_ms) # Update text input box (e.g., cursor blink)
-        the_piano_roll.update(current_song_time_seconds)
+        search_input_box.update(dt_ms)
+        if not show_search_results_ui: # Only update piano roll if results are not shown (or pause piano roll too)
+            the_piano_roll.update(current_song_time_seconds)
+        # else: # Optionally, could have a dimmed/paused update for piano roll when results are up
 
         # --- Drawing ---
         # 1. Background (Stars)
@@ -426,21 +526,24 @@ def main():
         pygame.draw.rect(screen, MAIN_SECTION_COLOR, main_section_rect)
 
         # 3. Application Components (Piano Roll, Keyboard)
-        the_piano_roll.draw(screen)
+        if not show_search_results_ui: # Don't draw piano roll if search results are shown
+            the_piano_roll.draw(screen)
         piano_keyboard.draw(screen)
 
-        # Control Panel Background (drawn before GUI elements on it)
+        # Control Panel Background
         pygame.draw.rect(screen, CONTROL_PANEL_COLOR, (0, CONTROL_PANEL_Y_START, SCREEN_WIDTH, CONTROL_PANEL_HEIGHT))
-        # Border for control panel (optional, if not part of its background rect fill)
-        # pygame.draw.rect(screen, BORDER_COLOR, (0, CONTROL_PANEL_Y_START, SCREEN_WIDTH, CONTROL_PANEL_HEIGHT), BORDER_WIDTH)
-        pygame.draw.line(screen, BORDER_COLOR, (0, CONTROL_PANEL_Y_START), (SCREEN_WIDTH, CONTROL_PANEL_Y_START ), BORDER_WIDTH) # Ensure top border of control panel is clean
+        pygame.draw.line(screen, BORDER_COLOR, (0, CONTROL_PANEL_Y_START), (SCREEN_WIDTH, CONTROL_PANEL_Y_START ), BORDER_WIDTH)
 
 
         # 4. GUI Elements in Control Panel
         search_input_box.draw(screen)
         search_button.draw(screen)
 
-        # 5. Top-level UI Text Elements (Title, etc.)
+        # 5. Search Results List (if active) - draw on top of main section elements, but below header/control panel
+        if show_search_results_ui:
+            search_results_display_list.draw(screen)
+
+        # 6. Top-level UI Text Elements (Title, etc.)
         screen.blit(title_text_surface, title_text_rect)
 
         pygame.display.flip()

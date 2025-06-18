@@ -126,8 +126,34 @@ class PianoRoll:
                 'note_midi': midi_note,
                 'alpha': 255,
                 'size': initial_size,
-                'max_size': initial_size * 3 # Expand to 3x initial size
+                'max_size': initial_size * 3
             })
+
+    def set_song(self, new_notes: list[Note], new_ticks_per_beat: int, new_tempo_micros_per_beat: int):
+        """
+        Loads a new song into the piano roll.
+        """
+        self.notes = new_notes if new_notes else []
+        self.ticks_per_beat = new_ticks_per_beat if new_ticks_per_beat and new_ticks_per_beat > 0 else 480
+        self.tempo_micros_per_beat = new_tempo_micros_per_beat if new_tempo_micros_per_beat and new_tempo_micros_per_beat > 0 else 500000
+
+        # Recalculate seconds_per_tick based on new song properties
+        if self.ticks_per_beat == 0: # Avoid division by zero
+            print("Warning: ticks_per_beat is zero in set_song. Using default.")
+            self.ticks_per_beat = 480 # Fallback
+        self.seconds_per_tick = self.tempo_micros_per_beat / (1000000.0 * self.ticks_per_beat)
+
+        # Reset visual state
+        self.visible_note_representations = []
+        self.hit_effects = []
+        # self.scroll_y_offset = 0 # Reset scroll if needed, though typically song time resets to 0
+
+        print(f"PianoRoll: New song set. Notes: {len(self.notes)}, TPB: {self.ticks_per_beat}, Tempo: {self.tempo_micros_per_beat}")
+        # It's usually good to call self.update(0.0) or similar if current_time is also reset externally,
+        # to immediately populate visible_note_representations for the start of the song.
+        # However, if the main loop resets current_song_time_seconds to 0.0 and calls update,
+        # this might not be strictly necessary here.
+
 
 def create_test_midi(file_path="assets/midi/dummy_pianoroll_test.mid", ticks_per_beat=480):
     """Creates a simple MIDI file for testing the piano roll."""
