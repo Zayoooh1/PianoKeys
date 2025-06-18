@@ -25,6 +25,8 @@ class Keyboard:
         self.y = y
         self.width = width
         self.height = height
+        self.rect = pygame.Rect(self.x, self.y, self.width, self.height) # Added this line
+
         self.start_midi_note = start_midi_note # MIDI note for the first key (leftmost C)
         self.num_octaves = num_octaves
 
